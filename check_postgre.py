@@ -361,6 +361,17 @@ class PgPostmaster(Pg):
         self._storeLastCheckValue('qpstime', res[0])
         return [res, self._truncateNumber(r)]
 
+
+    def isStatEnabled(self):
+        """
+        Checks whether statistics enabled in postgresql config
+        Only track_counts checks
+        :return: boolean
+        """
+        q = "select setting from pg_settings where name='track_counts'"
+        res = self._connection.queryOne(q)
+        return res == 'on'
+
     # def getDiskCacheInfo(self):
     #     """
     #     Returns disk cache efficiency
@@ -436,31 +447,37 @@ cliparse.add_option("-h", "--host", dest="host", default="127.0.0.1", help="data
 cliparse.add_option("-U", "--username", dest="username", default="postgres", help="database user name (default: postgres)")
 cliparse.add_option("-p", "--port", dest="port", default="5432", help="database server port (default: 5432)")
 cliparse.add_option("-W", "--password", dest="password", help="password to connect to")
+cliparse.add_option("--default-database", dest="defaultDatabase", default="postgres", help="default database to connect to monitor Postmaster (default: postgres)")
 cliparse.add_option("--diskstat", dest="diskstat", default="postgres", action="store_true", help="display disk cache usage in Performance")
 cliparse.add_option("--tupstat", dest="tupstat", default="postgres", action="store_true", help="display tuples r/w in Performance")
 cliparse.add_option("--indstat", dest="indstat", default="postgres", action="store_true", help="display index efficiency in Performance")
-cliparse.add_option("--help", action="help")
+cliparse.add_option("--help", action="help", help="display this help")
 (cliopt, cliargs) = cliparse.parse_args()
 
-if (cliopt.dbname == None): #TODO: possibility to monitor postmaster only
-    output.unknown("No databases to monitor. Specify at least one by -d option")
-
+# Connect to default database
 memento = ConfigMemento('last_check', 'check_postgre')
+try:
+    pmconn = DBConnection(cliopt.defaultDatabase, cliopt.host, cliopt.port, cliopt.username, cliopt.password)
+except Exception as e:
+    output.crit(e)
+    output.finish()
+pm = PgPostmaster(pmconn, memento)
+if not pm.isStatEnabled():
+    output.unknown('PostgreSQL statistics disabled in config')
+    output.finish()
+
+# Connect to user-specified databases
 conns = {}
 dbs = {}
-for i in cliopt.dbname:
-    try:
-        conns[i] = DBConnection(i, cliopt.host, cliopt.port, cliopt.username, cliopt.password)
-    except psycopg2.OperationalError as e:
-        output.crit(e)
-        output.finish()
+if cliopt.dbname != None:
+    for i in cliopt.dbname:
+        try:
+            conns[i] = DBConnection(i, cliopt.host, cliopt.port, cliopt.username, cliopt.password)
+        except psycopg2.OperationalError as e:
+            output.crit(e)
+            output.finish()
 
-    dbs[i] = PgDatabase(conns[i], memento)
-
-if len(conns) == 0:
-    raise Exception('No connections found')
-
-pm = PgPostmaster(conns.values()[0], memento) #FIXME: make default connection if no database specified
+        dbs[i] = PgDatabase(conns[i], memento)
 
 # Uptime
 message = 'Uptime:' + pm.getUptime() + ' / '
@@ -478,29 +495,32 @@ message += "instances:%s / topIPs:%s / topusers:%s" % (res['count'], ipsstr, use
 output.msg(message)
 
 # Fill Performance message
-performance = 'DB:'
-pieces = []
-for i in dbs:
-    s = []
-    if cliopt.diskstat == True:
-        res = dbs[i].getDiskCacheInfo()[0]
-        s.append("diskread:%s,cachehit:%s(%s%%)" % (res[0][1], res[0][2], int(float(res[0][3]) * 100)))
-    if cliopt.tupstat == True:
-        res = dbs[i].getTupleLoadTop()
-        s.append("tupfetch:%s,tupmod:%s" % (res[0][1], res[0][2]))
-    if cliopt.indstat == True:
-        res = dbs[i].getTableIndexEfficiencyTop()
-        top3 = ','.join(map(lambda x: "%s=seqscan:%s,idxscan:%s(%s%%)" % (x[0], x[1], x[2], x[3]), res[0:2]))
-        s.append("TABLES:{" + top3 + "}")
-    pieces.append("[%s=" % dbs[i].getDatabaseName() + ','.join(s) + '] ')
-performance += ''.join(pieces)
-output.perf(performance)
+
+performance = ''
+
+if len(conns):
+    pieces = []
+    for i in dbs:
+        s = []
+        if cliopt.diskstat == True:
+            res = dbs[i].getDiskCacheInfo()[0]
+            s.append("diskread:%s,cachehit:%s(%s%%)" % (res[0][1], res[0][2], int(float(res[0][3]) * 100)))
+        if cliopt.tupstat == True:
+            res = dbs[i].getTupleLoadTop()
+            s.append("tupfetch:%s,tupmod:%s" % (res[0][1], res[0][2]))
+        if cliopt.indstat == True:
+            res = dbs[i].getTableIndexEfficiencyTop()
+            top3 = ','.join(map(lambda x: "%s=seqscan:%s,idxscan:%s(%s%%)" % (x[0], x[1], x[2], x[3]), res[0:2]))
+            s.append("TABLES:{" + top3 + "}")
+        pieces.append("[%s=" % dbs[i].getDatabaseName() + ','.join(s) + '] ')
+    performance += ''.join(pieces)
+    output.perf(performance)
 
 memento.saveToFile()
 
 output.finish()
 sys.exit(0)
 
-#TODO: check whether postgres statistics enabled
+#TODO: slow queries
 #TODO: check permission to read statistics
 #TODO: WARNING, CRITICAL thresholds in command line
