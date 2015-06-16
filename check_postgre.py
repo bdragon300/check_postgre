@@ -5,13 +5,15 @@
 # Email:    id@miran.ru
 # Summary:  Nagios NRPE plugin to check PostgreSQL server health and to return its performance
 ##
-__author__      = 'Igor Derkach'
+__author__ = 'Igor Derkach'
 
 #
 # Begin code
 
-import sys, os
-import ConfigParser, tempfile
+import sys
+import os
+import ConfigParser
+import tempfile
 from optparse import OptionParser
 
 
@@ -20,7 +22,7 @@ class Output:
     The class must be singleton
     Collects various types of script messages and eventually prints them and exists with correct exit code
     """
-    _msgs = {'warn': [], 'crit': [], 'unknown':[]}
+    _msgs = {'warn': [], 'crit': [], 'unknown': []}
     _output = {'message': [], 'performance': []}
 
     # Appropriate types of messages
@@ -68,7 +70,6 @@ class Output:
             sys.exit(0)
 
 
-
 output = Output()
 
 try:
@@ -77,17 +78,17 @@ except:
     output.unknown('No module python-psycopg2 found')
     output.finish()
 
+
 class DBConnection:
-    '''
+    """
     Simple class to handle database connections and to process queries
-    '''
+    """
 
     # Connection object
-    _conn = False
+    _conn = None
 
     # Parameters what uses to connect to the database
     _connParams = {}
-
 
     def queryAll(self, q):
         """
@@ -127,13 +128,12 @@ class DBConnection:
     def getDatabaseName(self):
         return self._connParams['dbname']
 
-
     def __init__(self, dbname, host, port, user, password):
         self._conn = psycopg2.connect(database=dbname, host=host, port=port, user=user, password=password)
-        self._connParams = {'dbname': dbname, 'host': host, 'port': port, 'user': user, 'password' : password}
+        self._connParams = {'dbname': dbname, 'host': host, 'port': port, 'user': user, 'password': password}
 
     def __del__(self):
-        if self._conn != False:
+        if self._conn is not None:
             self._conn.close()
 
 
@@ -151,7 +151,7 @@ class TempConfig:
         :return:
         """
         f = None
-        if dirname != None:
+        if dirname is not None:
             tdir = os.path.join(tempfile.gettempdir(), dirname)
         else:
             tdir = tempfile.gettempdir()
@@ -201,6 +201,7 @@ class TempConfig:
         f.flush()
         f.close()
 
+
 class ConfigMemento:
 
     _tempConfig = None
@@ -242,6 +243,7 @@ class ConfigMemento:
             obj._state = self._state[obj._stateIndex]
         else:
             obj._state = {}
+
 
 class Pg:
     """
@@ -288,7 +290,8 @@ class Pg:
     def _storeLastCheckValue(self, name, value):
         self._state[name] = value
 
-    def _truncateNumber(self, number):
+    @staticmethod
+    def _truncateNumber(number):
         """
         Truncate big number and adds prefix: K for thousands, M for millions
         :param number:
@@ -304,9 +307,9 @@ class Pg:
 
 
 class PgPostmaster(Pg):
-    '''
+    """
     Retirieves information about PostgreSQL instance
-    '''
+    """
 
     _stateIndex = 'POSTMASTER'
 
@@ -349,7 +352,8 @@ class PgPostmaster(Pg):
         This value calculates from previous check value
         :return: [raw_value, 'value for output']
         """
-        q = "select extract(epoch from now())::int as epoch, sum(xact_commit+xact_rollback) as sum from pg_stat_database"
+        q = "select extract(epoch from now())::int as epoch, sum(xact_commit+xact_rollback) as sum " \
+            "from pg_stat_database"
         res = self._connection.queryAll(q)[0]
 
         try:
@@ -360,7 +364,6 @@ class PgPostmaster(Pg):
         self._storeLastCheckValue('qps', res[1])
         self._storeLastCheckValue('qpstime', res[0])
         return [res, self._truncateNumber(r)]
-
 
     def isStatEnabled(self):
         """
@@ -385,10 +388,11 @@ class PgPostmaster(Pg):
     #
     #     return res
 
+
 class PgDatabase(Pg):
-    '''
+    """
     Retrieves information about one database
-    '''
+    """
 
     def getDiskCacheInfo(self):
         """
@@ -438,24 +442,34 @@ class PgDatabase(Pg):
         return res
 
 
-
 # Command line options parse
 usage = 'Usage: %prog [options]'
 cliparse = OptionParser(usage=usage, add_help_option=False)
-cliparse.add_option("-d", "--dbname", dest="dbname", action="append", help="databases to monitor to. Can be specified multiple times")
-cliparse.add_option("-h", "--host", dest="host", default="127.0.0.1", help="database server host (default: 127.0.0.1)")
-cliparse.add_option("-U", "--username", dest="username", default="postgres", help="database user name (default: postgres)")
-cliparse.add_option("-p", "--port", dest="port", default="5432", help="database server port (default: 5432)")
-cliparse.add_option("-W", "--password", dest="password", help="password to connect to")
-cliparse.add_option("--default-database", dest="defaultDatabase", default="postgres", help="default database to connect to monitor Postmaster (default: postgres)")
-cliparse.add_option("--diskstat", dest="diskstat", default="postgres", action="store_true", help="display disk cache usage in Performance")
-cliparse.add_option("--tupstat", dest="tupstat", default="postgres", action="store_true", help="display tuples r/w in Performance")
-cliparse.add_option("--indstat", dest="indstat", default="postgres", action="store_true", help="display index efficiency in Performance")
-cliparse.add_option("--help", action="help", help="display this help")
+cliparse.add_option("-d", "--dbname", dest="dbname", action="append",
+                    help="databases to monitor to.Can be specified multiple times")
+cliparse.add_option("-h", "--host", dest="host", default="127.0.0.1",
+                    help="database server host (default: 127.0.0.1)")
+cliparse.add_option("-U", "--username", dest="username", default="postgres",
+                    help="database user name (default: postgres)")
+cliparse.add_option("-p", "--port", dest="port", default="5432",
+                    help="database server port (default: 5432)")
+cliparse.add_option("-W", "--password", dest="password",
+                    help="password to connect to")
+cliparse.add_option("--default-database", dest="defaultDatabase", default="postgres",
+                    help="default database to connect to monitor Postmaster (default: postgres)")
+cliparse.add_option("--diskstat", dest="diskstat", default="postgres", action="store_true",
+                    help="display disk cache usage in Performance")
+cliparse.add_option("--tupstat", dest="tupstat", default="postgres", action="store_true",
+                    help="display tuples r/w in Performance")
+cliparse.add_option("--indstat", dest="indstat", default="postgres", action="store_true",
+                    help="display index efficiency in Performance")
+cliparse.add_option("--help", action="help",
+                    help="display this help")
 (cliopt, cliargs) = cliparse.parse_args()
 
 # Connect to default database
 memento = ConfigMemento('last_check', 'check_postgre')
+pmconn = None
 try:
     pmconn = DBConnection(cliopt.defaultDatabase, cliopt.host, cliopt.port, cliopt.username, cliopt.password)
 except Exception as e:
@@ -469,7 +483,7 @@ if not pm.isStatEnabled():
 # Connect to user-specified databases
 conns = {}
 dbs = {}
-if cliopt.dbname != None:
+if cliopt.dbname is not None:
     for i in cliopt.dbname:
         try:
             conns[i] = DBConnection(i, cliopt.host, cliopt.port, cliopt.username, cliopt.password)
@@ -502,13 +516,13 @@ if len(conns):
     pieces = []
     for i in dbs:
         s = []
-        if cliopt.diskstat == True:
+        if cliopt.diskstat is True:
             res = dbs[i].getDiskCacheInfo()[0]
             s.append("diskread:%s,cachehit:%s(%s%%)" % (res[0][1], res[0][2], int(float(res[0][3]) * 100)))
-        if cliopt.tupstat == True:
+        if cliopt.tupstat is True:
             res = dbs[i].getTupleLoadTop()
             s.append("tupfetch:%s,tupmod:%s" % (res[0][1], res[0][2]))
-        if cliopt.indstat == True:
+        if cliopt.indstat is True:
             res = dbs[i].getTableIndexEfficiencyTop()
             top3 = ','.join(map(lambda x: "%s=seqscan:%s,idxscan:%s(%s%%)" % (x[0], x[1], x[2], x[3]), res[0:2]))
             s.append("TABLES:{" + top3 + "}")
