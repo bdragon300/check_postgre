@@ -14,15 +14,68 @@ import sys, os
 import ConfigParser, tempfile
 from optparse import OptionParser
 
-def err(msg, status=1):
-    print 'ERROR: ' + msg
-    sys.exit(status)
+
+class Output:
+    """
+    The class must be singleton
+    Collects various types of script messages and eventually prints them and exists with correct exit code
+    """
+    _msgs = {'warn': [], 'crit': [], 'unknown':[]}
+    _output = {'message': [], 'performance': []}
+
+    # Appropriate types of messages
+    # At the end we call finish() to print message(s) and exit with correct exit code
+    def msg(self, msg):
+        self._output['message'].append(str(msg).replace("\n", ""))
+
+    def perf(self, msg):
+        self._output['performance'].append(str(msg).replace("\n", ""))
+
+    def warn(self, msg):
+        self._msgs['warn'].append(str(msg).replace("\n", ""))
+
+    def crit(self, msg):
+        self._msgs['crit'].append(str(msg).replace("\n", ""))
+
+    def unknown(self, msg):
+        self._msgs['unknown'].append(str(msg).replace("\n", ""))
+
+    def finish(self):
+        """
+        Prints message to stdout. If errors, warnings, unknown messages has occured then
+         exists with those messages and with appropriate exit codes
+        :return:
+        """
+        if len(self._msgs['crit']):
+            print 'CRITICAL: ' + ';'.join(self._msgs['crit'])
+            sys.exit(2)
+        elif len(self._msgs['warn']):
+            print 'WARNING: ' + ';'.join(self._msgs['warn'])
+            sys.exit(1)
+        elif len(self._msgs['unknown']):
+            print 'UNKNOWN: ' + ';'.join(self._msgs['unknown'])
+            sys.exit(3)
+        else:
+            sys.stdout.write('OK: ')
+            if len(self._output['message']):
+                sys.stdout.write(';'.join(self._output['message']))
+            if len(self._output['performance']):
+                sys.stdout.write(' | ' + ';'.join(self._output['performance']))
+            if len(self._output['message']) == 0:
+                sys.stdout.write('All OK')
+
+            sys.stdout.write("\n")
+            sys.exit(0)
+
+
+
+output = Output()
 
 try:
     import psycopg2
 except:
-    err('No module python-psycopg2 found')
-
+    output.unknown('No module python-psycopg2 found')
+    output.finish()
 
 class DBConnection:
     '''
@@ -71,6 +124,9 @@ class DBConnection:
     def getConnectionParams(self):
         return self._connParams
 
+    def getDatabaseName(self):
+        return self._connParams['dbname']
+
 
     def __init__(self, dbname, host, port, user, password):
         self._conn = psycopg2.connect(database=dbname, host=host, port=port, user=user, password=password)
@@ -86,16 +142,15 @@ class TempConfig:
     Stores and loads results from previous plugins check file
     """
 
-    _f = None # File object
-    _cfg = None # ConfigParser object
-    _section = 'Counters' # Section in last check file
-    _data = []
+    _filename = None
+    _data = {}
 
-    def __init__(self, dirname, filename):
+    def __init__(self, filename, dirname=None):
         """
         Creates temp file
         :return:
         """
+        f = None
         if dirname != None:
             tdir = os.path.join(tempfile.gettempdir(), dirname)
         else:
@@ -103,19 +158,13 @@ class TempConfig:
         if not os.path.isdir(tdir):
             os.mkdir(tdir)
         tfile = os.path.join(tdir, filename)
+        self._filename = tfile
         if not os.path.isfile(tfile):
-            self._f = open(tfile, 'w')
-            self._f.close()
-        self._f = open(tfile, 'rw')
-
-        self._cfg = ConfigParser.ConfigParser()
-
-    def __del__(self):
-        if self._f != None:
-            self._f.close()
+            f = open(tfile, 'w')
+            f.close()
 
     def __iter__(self):
-        yield self._data
+        return iter(self._data)
 
     def __getitem__(self, item):
         try:
@@ -123,66 +172,143 @@ class TempConfig:
         except:
             return []
 
-    def load(self, data):
-        self._cfg.readfp(self._f)
-        for i in self._cfg.sections():
-            self._data[i] = self._cfg.items(i,vars=True)
-        self._f.close()
+    def __setitem__(self, key, value):
+        self._data[key] = value
+
+    def load(self):
+        f = open(self._filename, 'r')
+        cfg = ConfigParser.ConfigParser()
+        cfg.readfp(f)
+        for i in cfg.sections():
+            self._data[i] = dict(cfg.items(i))
+        f.close()
 
     def flush(self):
         """
         Writes data to temp file
         """
         cfg = ConfigParser.ConfigParser()
+        f = open(self._filename, 'w')
         for i in self._data:
             if not isinstance(self._data[i], dict):
                 raise TypeError('data[] item must has dict type')
             for j in self._data[i]:
+                if not cfg.has_section(i):
+                    cfg.add_section(i)
                 cfg.set(i, j, self._data[i][j])
 
-        cfg.write(self._f)
+        cfg.write(f)
+        f.flush()
+        f.close()
 
+class ConfigMemento:
+
+    _tempConfig = None
+
+    _members = []
+    _state = {}
+
+    def __init__(self, filename, dirname):
+        self._tempConfig = TempConfig(filename, dirname)
+        self._tempConfig.load()
+        for i in self._tempConfig:
+            self._state[i] = self._tempConfig[i]
+
+    def subscribe(self, obj):
+        """
+        :type obj: Pg*
+        """
+        if obj not in self._members:
+            self._members.append(obj)
+
+    def unsubscribe(self, obj):
+        for i in self._members:
+            if i == obj:
+                self._members.remove(i)
+
+    def saveToFile(self):
+        for i in self._members:
+            self._state[i._stateIndex] = i._state
+            self._tempConfig[i._stateIndex] = i._state
+
+        self._tempConfig.flush()
+
+    def loadState(self):
+        for i in self._members:
+            self.loadConfigTo(i)
+
+    def loadConfigTo(self, obj):
+        if obj._stateIndex in self._state:
+            obj._state = self._state[obj._stateIndex]
+        else:
+            obj._state = {}
 
 class Pg:
     """
     Base class for Pg* classes that retrieve info from postgres
     """
-
-    _lastCheckFile = None
     
     # DBConnection object
     _connection = None
 
-    def __init__(self, connection, lastCheckFile):
+    # Internal state of object to store to the temp file
+    # Key-value pairs
+    _state = {}
+
+    # Section name to write to temp file. In general - database name
+    # For postmaster instance is "POSTMASTER"
+    _stateIndex = ""
+
+    def __init__(self, connection, memento):
         """
         :type connection: DBConnection
-        :type lastCheckFile: TempConfig
+        :type memento: ConfigMemento
         """
         self._connection = connection
-        self._lastCheckFile = lastCheckFile
+        self._stateIndex = connection.getDatabaseName()
+        memento.subscribe(self)
+        memento.loadConfigTo(self)
 
-    def diffWithLastCheck(self, section, name, value):
+    def diffWithLastCheck(self, name, value):
         """
         Returns difference between current value and last check value
         If no value was saved then simply return the current one
-        :param section:
         :param name:
         :param value: numeric
         :return:
         """
         try:
-            return value - self._lastCheckFile[section][name]
+            return value - int(self._state[name])
         except:
             return value
 
     def getDatabaseName(self):
         return self._connection.getConnectionParams()['dbname']
 
+    def _storeLastCheckValue(self, name, value):
+        self._state[name] = value
+
+    def _truncateNumber(self, number):
+        """
+        Truncate big number and adds prefix: K for thousands, M for millions
+        :param number:
+        :return: string
+        """
+        p = ['', 'K', 'M', 'MM']
+
+        while number > 1000 and len(p) > 0:
+            number /= 1000
+            p.pop(0)
+
+        return str(int(number)) + p[0]
+
 
 class PgPostmaster(Pg):
     '''
     Retirieves information about PostgreSQL instance
     '''
+
+    _stateIndex = 'POSTMASTER'
 
     def getUptime(self):
         """
@@ -216,6 +342,24 @@ class PgPostmaster(Pg):
         res['addrs'] = self._connection.queryAll(q)
 
         return res
+
+    def getQps(self):
+        """
+        Returns queries per second
+        This value calculates from previous check value
+        :return: [raw_value, 'value for output']
+        """
+        q = "select extract(epoch from now())::int as epoch, sum(xact_commit+xact_rollback) as sum from pg_stat_database"
+        res = self._connection.queryAll(q)[0]
+
+        try:
+            r = float(self.diffWithLastCheck('qps', res[1])) / self.diffWithLastCheck('qpstime', res[0])
+        except ZeroDivisionError:
+            r = self.diffWithLastCheck('qps', res[1])
+
+        self._storeLastCheckValue('qps', res[1])
+        self._storeLastCheckValue('qpstime', res[0])
+        return [res, self._truncateNumber(r)]
 
     # def getDiskCacheInfo(self):
     #     """
@@ -283,7 +427,8 @@ class PgDatabase(Pg):
         return res
 
 
-# Command line options
+
+# Command line options parse
 usage = 'Usage: %prog [options]'
 cliparse = OptionParser(usage=usage, add_help_option=False)
 cliparse.add_option("-d", "--dbname", dest="dbname", action="append", help="databases to monitor to. Can be specified multiple times")
@@ -297,51 +442,65 @@ cliparse.add_option("--indstat", dest="indstat", default="postgres", action="sto
 cliparse.add_option("--help", action="help")
 (cliopt, cliargs) = cliparse.parse_args()
 
-if (cliopt.dbname == None):
-    err("No databases to monitor. Specify at least one by -d option")
+if (cliopt.dbname == None): #TODO: possibility to monitor postmaster only
+    output.unknown("No databases to monitor. Specify at least one by -d option")
 
-lastCheck = TempConfig('check_postgre', 'last_check')
+memento = ConfigMemento('last_check', 'check_postgre')
 conns = {}
 dbs = {}
 for i in cliopt.dbname:
-    conns[i] = DBConnection(i, cliopt.host, cliopt.port, cliopt.username, cliopt.password)
-    dbs[i] = PgDatabase(conns[i], lastCheck)
+    try:
+        conns[i] = DBConnection(i, cliopt.host, cliopt.port, cliopt.username, cliopt.password)
+    except psycopg2.OperationalError as e:
+        output.crit(e)
+        output.finish()
+
+    dbs[i] = PgDatabase(conns[i], memento)
 
 if len(conns) == 0:
     raise Exception('No connections found')
 
-pm = PgPostmaster(conns.values()[0], lastCheck)
+pm = PgPostmaster(conns.values()[0], memento) #FIXME: make default connection if no database specified
 
+# Uptime
 message = 'Uptime:' + pm.getUptime() + ' / '
 
+# Queries per second
+res = pm.getQps()
+message += "queries per second: %s / " % res[1]
 
+# Connection summary
 res = pm.getConnSummary()
-
 # [(a,b)(...)] -> "a=b,..."
 ipsstr = ','.join(map(lambda x: "%s=%s" % (x[0], x[1]), res['addrs'][0:2]))
 usersstr = ','.join(map(lambda x: "%s=%s" % (x[0], x[1]), res['users'][0:2]))
 message += "instances:%s / topIPs:%s / topusers:%s" % (res['count'], ipsstr, usersstr)
+output.msg(message)
 
+# Fill Performance message
 performance = 'DB:'
 pieces = []
 for i in dbs:
     s = []
-    if cliopt.diskstat:
+    if cliopt.diskstat == True:
         res = dbs[i].getDiskCacheInfo()[0]
         s.append("diskread:%s,cachehit:%s(%s%%)" % (res[0][1], res[0][2], int(float(res[0][3]) * 100)))
-    if cliopt.tupstat:
+    if cliopt.tupstat == True:
         res = dbs[i].getTupleLoadTop()
         s.append("tupfetch:%s,tupmod:%s" % (res[0][1], res[0][2]))
-    if cliopt.indstat:
+    if cliopt.indstat == True:
         res = dbs[i].getTableIndexEfficiencyTop()
-        top3 = ','.join(map(lambda x: "%s=seqscan:%s,indscan:%s(%s%%)" % (x[0], x[1], x[2], x[3]), res[0:2]))
+        top3 = ','.join(map(lambda x: "%s=seqscan:%s,idxscan:%s(%s%%)" % (x[0], x[1], x[2], x[3]), res[0:2]))
         s.append("TABLES:{" + top3 + "}")
     pieces.append("[%s=" % dbs[i].getDatabaseName() + ','.join(s) + '] ')
 performance += ''.join(pieces)
+output.perf(performance)
 
-print message + ' | ' + performance
-sys.exit(0) #TODO: return other statuses
+memento.saveToFile()
 
-#TODO: queries per second
+output.finish()
+sys.exit(0)
+
 #TODO: check whether postgres statistics enabled
 #TODO: check permission to read statistics
+#TODO: WARNING, CRITICAL thresholds in command line
