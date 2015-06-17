@@ -467,6 +467,9 @@ cliparse.add_option("--help", action="help",
                     help="display this help")
 (cliopt, cliargs) = cliparse.parse_args()
 
+if cliopt.password == None:
+    cliopt.password = ''
+
 # Connect to default database
 memento = ConfigMemento('last_check', 'check_postgre')
 pmconn = None
