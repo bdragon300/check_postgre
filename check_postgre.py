@@ -75,7 +75,7 @@ output = Output()
 try:
     import psycopg2
 except:
-    output.unknown('No module python-psycopg2 found')
+    output.unknown('No module psycopg2 found')
     output.finish()
 
 
@@ -169,7 +169,7 @@ class TempConfig:
     def __getitem__(self, item):
         try:
             return self._data[item]
-        except:
+        except KeyError:
             return []
 
     def __setitem__(self, key, value):
@@ -349,8 +349,8 @@ class PgPostmaster(Pg):
     def getQps(self):
         """
         Returns queries per second
-        This value calculates from previous check value
-        :return: [raw_value, 'value for output']
+        This value calculates from previous check value (difference)
+        :return: [raw_value, 'raw value for output', 'difference for output']
         """
         q = "select extract(epoch from now())::int as epoch, sum(xact_commit+xact_rollback) as sum " \
             "from pg_stat_database"
@@ -363,7 +363,7 @@ class PgPostmaster(Pg):
 
         self._storeLastCheckValue('qps', res[1])
         self._storeLastCheckValue('qpstime', res[0])
-        return [res, self._truncateNumber(r)]
+        return [res, self._truncateNumber(res[1]), self._truncateNumber(r)]
 
     def isStatEnabled(self):
         """
@@ -498,7 +498,7 @@ message = 'Uptime:' + pm.getUptime() + ' / '
 
 # Queries per second
 res = pm.getQps()
-message += "queries per second: %s / " % res[1]
+message += "queries:%s(%s per second) / " % (res[1], res[2])
 
 # Connection summary
 res = pm.getConnSummary()
