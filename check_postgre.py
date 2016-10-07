@@ -471,7 +471,8 @@ if cliopt.password == None:
     cliopt.password = ''
 
 # Connect to default database
-memento = ConfigMemento('last_check', 'check_postgre')
+curr_user = os.geteuid()
+memento = ConfigMemento('last_check', 'check_postgre-' + str(curr_user))
 pmconn = None
 try:
     pmconn = DBConnection(cliopt.defaultDatabase, cliopt.host, cliopt.port, cliopt.username, cliopt.password)
